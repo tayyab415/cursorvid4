@@ -45,7 +45,8 @@ export const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ isOpen, onCl
         setIsOptimizing(true);
         try {
             const target = tab === 'edit' ? 'nano_banana' : 'veo';
-            const optimized = await optimizePrompt(prompt, target, sourceImageBase64);
+            // Passing source image in array for new signature
+            const optimized = await optimizePrompt(prompt, target, [sourceImageBase64]);
             setPrompt(optimized);
         } catch (e) {
             console.error(e);

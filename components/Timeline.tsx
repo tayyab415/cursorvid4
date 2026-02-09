@@ -481,6 +481,15 @@ export const Timeline: React.FC<TimelineProps> = ({
                                         bgClass = 'bg-neutral-700/50 hover:bg-blue-600/80 border-dashed border-blue-400/50 cursor-crosshair z-[110]';
                                     }
 
+                                    // Check for transition opportunity with next clip
+                                    const nextClip = trackClips[index + 1];
+                                    const showTransitionTrigger = nextClip && 
+                                        Math.abs(nextClip.startTime - (clip.startTime + clip.duration)) < 0.1 && // Snapped
+                                        !trackTransitions.some(t => // No existing transition
+                                            (t.fromClipId === clip.id && t.toClipId === nextClip.id) ||
+                                            (t.startTime >= clip.startTime + clip.duration - 0.2 && t.startTime <= nextClip.startTime + 0.2)
+                                        );
+
                                     return (
                                         <React.Fragment key={clip.id}>
                                             <div
@@ -531,6 +540,22 @@ export const Timeline: React.FC<TimelineProps> = ({
                                                 <span className={`text-[10px] pointer-events-none ${isActive || isSelected ? 'text-yellow-200' : 'text-white/50'}`}>{displayDuration.toFixed(1)}s</span>
                                                 <button onClick={(e) => { e.stopPropagation(); onDelete([clip.id]); }} className={`absolute top-1 right-1 p-0.5 rounded-full bg-black/40 hover:bg-red-500 text-white/70 hover:text-white opacity-0 group-hover:opacity-100 transition-all z-30 ${isPickingMode ? 'hidden' : ''}`}><X size={10} strokeWidth={3} /></button>
                                             </div>
+
+                                            {/* MAGIC WAND TRIGGER FOR TRANSITIONS */}
+                                            {showTransitionTrigger && !isPickingMode && !isSelectionMode && !dragState && (
+                                                <div 
+                                                    className="absolute top-1/2 -translate-y-1/2 z-[60] group/wand cursor-pointer hover:scale-110 transition-transform"
+                                                    style={{ left: `${(clip.startTime + clip.duration) * pxPerSec}px`, transform: 'translate(-50%, -50%)' }}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (onTransitionRequest && nextClip) onTransitionRequest(clip, nextClip);
+                                                    }}
+                                                >
+                                                    <div className="w-5 h-5 rounded-full bg-purple-600 border border-purple-400 flex items-center justify-center shadow-lg group-hover/wand:shadow-purple-500/50">
+                                                        <Wand2 size={10} className="text-white" />
+                                                    </div>
+                                                </div>
+                                            )}
                                         </React.Fragment>
                                     );
                                 })}

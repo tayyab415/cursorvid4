@@ -1,5 +1,5 @@
 {
-  "name": "Cursor video final",
+  "name": "CutPilot",
   "description": "A video editor interface demonstrating video understanding capabilities using Gemini 3 Pro.",
   "requestFramePermissions": [
     "camera",

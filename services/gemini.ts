@@ -296,7 +296,11 @@ export const suggestEdits = async (currentClips: Clip[]): Promise<Suggestion[]> 
 
 // --- GENERATION CAPABILITIES ---
 
-export const optimizePrompt = async (originalPrompt: string, targetModelType: 'imagen' | 'veo' | 'nano_banana', referenceImage?: string | null): Promise<string> => {
+export const optimizePrompt = async (
+    originalPrompt: string, 
+    targetModelType: 'imagen' | 'veo' | 'nano_banana' | 'transition', 
+    contextImages: string[] = []
+): Promise<string> => {
     const ai = getAiClient();
     
     let guidelines = "";
@@ -319,6 +323,19 @@ export const optimizePrompt = async (originalPrompt: string, targetModelType: 'i
         - Keep it continuous and fluid.
         - Mention physics/interaction if relevant.
         `;
+    } else if (targetModelType === 'transition') {
+        guidelines = `
+        CONTEXT: The user wants to generate a VIDEO TRANSITION between two clips.
+        INPUTS: You are provided with the END FRAME of Clip A and the START FRAME of Clip B.
+        GOAL: Write a prompt for Google Veo that generates a smooth, high-quality transition video bridging these two images.
+        
+        GUIDELINES (Based on Google Veo Prompting):
+        - Describe the transformation or movement explicitly.
+        - Use specific verbs: "morphs into", "dissolves to", "camera zooms through", "wipes across".
+        - Mention visual continuity: lighting changes, color blending.
+        - Keep it concise but descriptive enough for a video model.
+        - Example: "A cinematic blur wipe moving left to right, colors blending from the first scene into the second."
+        `;
     } else { // nano banana
         guidelines = `
         Ref: https://ai.google.dev/gemini-api/docs/image-generation#prompt-guide
@@ -330,9 +347,9 @@ export const optimizePrompt = async (originalPrompt: string, targetModelType: 'i
 
     const promptText = `
     ROLE: You are an Expert Prompt Engineer for Google's AI models.
-    TASK: Optimize the user's prompt for the '${targetModelType}' model.
+    TASK: Optimize the user's prompt for the '${targetModelType}' task.
     USER PROMPT: "${originalPrompt}"
-    ${referenceImage ? "CONTEXT: The user has provided a reference image (attached). Ensure the optimized prompt maintains visual consistency with this image if appropriate." : ""}
+    ${contextImages.length > 0 ? "CONTEXT: The user has provided context images (start/end frames). Ensure the optimized prompt describes a sequence or visuals consistent with these images." : ""}
     
     GUIDELINES TO APPLY:
     ${guidelines}
@@ -345,10 +362,13 @@ export const optimizePrompt = async (originalPrompt: string, targetModelType: 'i
     `;
 
     const contents: any = [{ role: 'user', parts: [] }];
-    if (referenceImage) {
-        const cleanData = referenceImage.includes(',') ? referenceImage.split(',')[1] : referenceImage;
+    
+    // Add context images
+    contextImages.forEach(img => {
+        const cleanData = img.includes(',') ? img.split(',')[1] : img;
         contents[0].parts.push({ inlineData: { mimeType: 'image/jpeg', data: cleanData } });
-    }
+    });
+
     contents[0].parts.push({ text: promptText });
 
     try {
