@@ -3,7 +3,7 @@ import { Clip, TransitionType } from '../types';
 
 export const DEFAULT_TEXT_STYLE = {
     fontFamily: 'Plus Jakarta Sans',
-    fontSize: 40,
+    fontSize: 30,
     isBold: true,
     isItalic: false,
     isUnderline: false,
@@ -39,8 +39,8 @@ export const drawClipToCanvas = (
         const lines = clip.text.split('\n');
         const metrics = ctx.measureText(lines[0]); 
         const lineHeight = style.fontSize * 1.2;
-        const bgWidth = metrics.width + (style.fontSize * 0.5);
-        const bgHeight = lineHeight * lines.length + (style.fontSize * 0.2);
+        const bgWidth = metrics.width + (style.fontSize * 1.0); // More padding
+        const bgHeight = lineHeight * lines.length + (style.fontSize * 0.4); // More padding
 
         if (style.backgroundOpacity > 0) {
             const prevAlpha = ctx.globalAlpha;

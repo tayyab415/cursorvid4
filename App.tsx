@@ -16,7 +16,7 @@ import {
   Sparkles, Scissors, Gauge, Download, Volume2, VolumeX, X, 
   Image as ImageIcon, Film, Mic, Camera, Trash2, Info, Captions, 
   Type, Check, ChevronLeft, ShieldCheck, Globe, FolderOpen, Plus,
-  MousePointer2, ScanEye, Grid3X3, HelpCircle, Key
+  MousePointer2, ScanEye, Grid3X3, HelpCircle, Key, Wand2, Maximize, Minimize
 } from 'lucide-react';
 import { timelineStore } from './timeline/store';
 import { AssetFoundryModal } from './components/foundry/AssetFoundryModal';
@@ -78,6 +78,7 @@ export default function App() {
   // UI STATE
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSafeZones, setShowSafeZones] = useState(false);
+  const [isFullScreen, setIsFullScreen] = useState(false);
   const [toasts, setToasts] = useState<Array<{ id: string, message: string, type: 'success' | 'error' | 'info' }>>([]);
 
   const addToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -120,6 +121,15 @@ export default function App() {
       return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // FULL SCREEN LISTENER
+  useEffect(() => {
+      const handleFullScreenChange = () => {
+          setIsFullScreen(!!document.fullscreenElement);
+      };
+      document.addEventListener('fullscreenchange', handleFullScreenChange);
+      return () => document.removeEventListener('fullscreenchange', handleFullScreenChange);
+  }, []);
+
   const clipsRef = useRef(clips);
   useEffect(() => { clipsRef.current = clips; }, [clips]);
 
@@ -131,7 +141,14 @@ export default function App() {
   const [isCustomSpeed, setIsCustomSpeed] = useState(false);
   const [showVolumeMenu, setShowVolumeMenu] = useState(false);
   const [showTextStyleMenu, setShowTextStyleMenu] = useState(false);
-  const [captionStyle, setCaptionStyle] = useState(DEFAULT_TEXT_STYLE);
+  
+  // Update default caption style for better readability
+  const [captionStyle, setCaptionStyle] = useState({
+      ...DEFAULT_TEXT_STYLE,
+      fontSize: 28,
+      backgroundOpacity: 0.6,
+      backgroundColor: '#000000'
+  });
 
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -140,6 +157,16 @@ export default function App() {
   const [isVerifying, setIsVerifying] = useState(false);
 
   const togglePlay = useCallback(() => setIsPlaying(p => !p), []);
+
+  const toggleFullScreen = useCallback(() => {
+      if (!document.fullscreenElement) {
+          containerRef.current?.requestFullscreen().catch(err => {
+              console.error(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
+          });
+      } else {
+          document.exitFullscreen();
+      }
+  }, []);
 
   const [currentTime, setCurrentTime] = useState(0); 
   const [isExporting, setIsExporting] = useState(false);
@@ -518,7 +545,8 @@ export default function App() {
                   duration: sub.end - sub.start, 
                   sourceStartTime: 0, 
                   trackId: 3, 
-                  textStyle: captionStyle 
+                  textStyle: captionStyle,
+                  transform: { x: 0, y: 0.35, scale: 1, rotation: 0 } // Position at bottom (85% height)
               });
           });
           
@@ -530,6 +558,47 @@ export default function App() {
       } finally { 
           setIsGenerating(false); 
       } 
+  };
+
+  const handleReferenceVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      
+      // Ensure API Key before heavy analysis
+      if (!await checkApiKey()) {
+          addToast("API Key required for analysis.", "error");
+          e.target.value = '';
+          return;
+      }
+
+      setIsProcessing(true);
+      // Add initial system message
+      setChatHistory(prev => [...prev, { role: 'system', text: `👁️ Analyzing style of reference video: ${file.name}...` }]);
+      
+      try {
+          const analyzer = new StyleAnalyzer();
+          const style = await analyzer.analyzeReferenceVideo(file);
+          
+          // Add result message
+          setChatHistory(prev => [...prev, { 
+              role: 'system', 
+              text: `✅ Analysis Complete.\nStyle: ${style.cutStyle}\nPacing: ${style.pacing}\nColor: ${style.colorGrade}\n\nReview the plan below to apply this style.` 
+          }]);
+
+          // Create and set plan
+          const plan = analyzer.generateStylePlan(style, clips);
+          setActivePlan(plan);
+          setCurrentStepIndex(0);
+          addToast("Style Analysis Complete", "success");
+          
+      } catch (err: any) {
+          console.error("Style analysis failed", err);
+          setChatHistory(prev => [...prev, { role: 'system', text: `❌ Failed to analyze video style: ${err.message}` }]);
+          addToast("Style Analysis Failed", "error");
+      } finally {
+          setIsProcessing(false);
+          if (refVideoInputRef.current) refVideoInputRef.current.value = '';
+      }
   };
 
   const handleExport = async () => { setIsExporting(true); setExportProgress(0); try { const canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720; const ctx = canvas.getContext('2d'); if (!ctx) throw new Error("No context"); for(let i=0; i<=100; i+=10) { setExportProgress(i); await new Promise(r => setTimeout(r, 100)); } addToast("Export Complete (Simulated)", "success"); } catch (e) { console.error(e); addToast("Export Failed", "error"); } finally { setIsExporting(false); } };
@@ -695,10 +764,6 @@ export default function App() {
       } finally {
           setIsGenerating(false);
       }
-  };
-
-  const handleReferenceVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      // ... (Same logic as before) ...
   };
 
   useEffect(() => { let animationFrameId: number; let lastTimestamp = performance.now(); const updateLoop = (timestamp: number) => { const dt = (timestamp - lastTimestamp) / 1000; lastTimestamp = timestamp; if (isPlaying) setCurrentTime((prevTime) => prevTime + dt); animationFrameId = requestAnimationFrame(updateLoop); }; if (isPlaying) { lastTimestamp = performance.now(); animationFrameId = requestAnimationFrame(updateLoop); } else { Object.values(mediaRefs.current).forEach((el) => { if (el instanceof HTMLMediaElement) { el.pause(); } }); } return () => cancelAnimationFrame(animationFrameId); }, [isPlaying]);
@@ -867,7 +932,26 @@ export default function App() {
                                     <AssetScout onAssetFound={handleScoutAssetFound} />
                                 </div>
                             ) : (
-                                <div className="max-w-xl mx-auto space-y-6 p-6"><div><label className="block text-sm font-medium text-neutral-400 mb-2">{genTab === 'audio' ? 'Text to Speak' : 'Prompt'}</label><textarea value={genPrompt} onChange={(e) => setGenPrompt(e.target.value)} placeholder={genTab === 'audio' ? "Enter text..." : "Describe what you want to generate..."} className="w-full h-24 bg-neutral-900 border border-neutral-700 rounded-xl p-3 text-sm focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 resize-none transition-all" autoFocus /></div>{genTab === 'video' && (<div className="space-y-4 pt-2 border-t border-neutral-800"><div className="flex items-center justify-between mb-2"><span className="text-sm font-medium text-neutral-300">Reference Images</span><span className={`text-xs font-medium px-2 py-0.5 rounded-full bg-neutral-800 border border-neutral-700 ${veoModeColor}`}>{veoModeLabel}</span></div><div className="grid grid-cols-2 gap-4"><div className="space-y-2"><div className="flex items-center justify-between"><label className="text-xs font-medium text-neutral-500">Start Frame (Optional)</label>{veoStartImg && <button onClick={() => setVeoStartImg(null)} className="text-xs text-red-400 hover:text-red-300"><Trash2 className="w-3 h-3" /></button>}</div><div className="relative aspect-video bg-neutral-900 border border-neutral-700 rounded-lg overflow-hidden group hover:border-blue-500/50 transition-colors">{veoStartImg ? (<img src={veoStartImg} className="w-full h-full object-cover" alt="Start Frame" />) : (<div className="absolute inset-0 flex flex-col items-center justify-center gap-2"><button onClick={() => handleCaptureFrame('start')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Camera className="w-3 h-3" /> Timeline</button><button onClick={() => handleVeoReferenceUpload('start')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Upload className="w-3 h-3" /> Upload</button></div>)}</div><p className="text-[10px] text-neutral-600">Tip: Position playhead to capture specific timeline frame.</p></div><div className="space-y-2"><div className="flex items-center justify-between"><label className={`text-xs font-medium ${!veoStartImg ? 'text-neutral-700' : 'text-neutral-500'}`}>End Frame (Requires Start Frame)</label>{veoEndImg && <button onClick={() => setVeoEndImg(null)} className="text-xs text-red-400 hover:text-red-300"><Trash2 className="w-3 h-3" /></button>}</div><div className={`relative aspect-video bg-neutral-900 border rounded-lg overflow-hidden group transition-colors ${!veoStartImg ? 'border-neutral-800 opacity-50 pointer-events-none' : 'border-neutral-700 hover:border-purple-500/50'}`}>{veoEndImg ? (<img src={veoEndImg} className="w-full h-full object-cover" alt="End Frame" />) : (<div className="absolute inset-0 flex flex-col items-center justify-center gap-2"><button onClick={() => handleCaptureFrame('end')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Camera className="w-3 h-3" /> Timeline</button><button onClick={() => handleVeoReferenceUpload('end')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Upload className="w-3 h-3" /> Upload</button></div>)}</div></div></div></div>)}{genTab === 'image' && (<div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-neutral-500 mb-1">Model</label><select value={imgModel} onChange={(e) => setImgModel(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="gemini-2.5-flash-image">Fast (Flash)</option><option value="gemini-3-pro-image-preview">High Quality (Pro)</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Aspect Ratio</label><select value={imgAspect} onChange={(e) => setImgAspect(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="16:9">16:9 (Landscape)</option><option value="9:16">9:16 (Portrait)</option><option value="1:1">1:1 (Square)</option></select></div></div>)}{genTab === 'video' && (<div className="grid grid-cols-2 gap-4"><div className="col-span-2 grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-neutral-500 mb-1">Model</label><select value={vidModel} onChange={(e) => setVidModel(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast</option><option value="veo-3.1-generate-preview">Veo 3.1 Quality</option><option value="veo-3.0-fast-generate-preview">Veo 3 Fast</option><option value="veo-3.0-generate-preview">Veo 3 Quality</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Resolution</label><select value={vidResolution} onChange={(e) => setVidResolution(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="720p">720p</option><option value="1080p">1080p (8s only)</option><option value="4k">4k (8s only)</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Duration</label><select value={vidDuration} onChange={(e) => setVidDuration(e.target.value as any)} disabled={vidResolution === '1080p' || vidResolution === '4k' || !!veoStartImg || !!veoEndImg} className={`w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500 ${vidResolution === '1080p' || vidResolution === '4k' || !!veoStartImg || !!veoEndImg ? 'opacity-50 cursor-not-allowed bg-neutral-800' : ''}`}><option value="4">4s</option><option value="8">8s</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Aspect Ratio</label><select value={vidAspect} onChange={(e) => setVidAspect(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="16:9">16:9 (Landscape)</option><option value="9:16">9:16 (Portrait)</option></select></div></div><div className="col-span-2 p-3 bg-blue-900/20 border border-blue-500/20 rounded-lg flex items-start gap-2"><Info className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" /><span className="text-xs text-blue-300 leading-relaxed">Video generation takes 1-2 minutes. A paid billing project is required.<br/><strong>Note:</strong> 1080p, 4K, and Image-to-Video operations are locked to 8s duration.</span></div></div>)}{genTab === 'audio' && (<div><label className="block text-xs font-medium text-neutral-500 mb-1">Voice</label><div className="grid grid-cols-5 gap-2">{['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].map(voice => (<button key={voice} onClick={() => setAudioVoice(voice)} className={`p-2 rounded border text-xs font-medium transition-all ${audioVoice === voice ? 'bg-purple-600 border-purple-500 text-white' : 'bg-neutral-800 border-neutral-700 text-neutral-400 hover:border-neutral-600'}`}>{voice}</button>))}</div></div>)}<div className="flex justify-end pt-4"><button onClick={handleGenerate} disabled={isGenerating || (genTab !== 'video' && !genPrompt.trim()) || (genTab === 'video' && !genPrompt.trim() && !veoStartImg)} className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white px-8 py-3 rounded-lg font-medium text-sm transition-all disabled:opacity-50 shadow-lg shadow-purple-900/20 w-full justify-center">{isGenerating ? (<><Loader2 className="w-5 h-5 animate-spin" />{genTab === 'video' ? 'Generating Video...' : 'Generating...'}</>) : (<><Sparkles className="w-5 h-5" />Generate {genTab.charAt(0).toUpperCase() + genTab.slice(1)}</>)}</button></div></div></div></div>)}</div></div>)}
+                                <div className="max-w-xl mx-auto space-y-6 p-6">
+                                    <div>
+                                        <div className="flex items-center justify-between mb-2">
+                                            <label className="block text-sm font-medium text-neutral-400">
+                                                {genTab === 'audio' ? 'Text to Speak' : 'Prompt'}
+                                            </label>
+                                            {(genTab === 'image' || genTab === 'video') && (
+                                                <button 
+                                                    onClick={handleOptimizePrompt}
+                                                    disabled={isOptimizing || !genPrompt.trim()}
+                                                    className="flex items-center gap-1.5 text-[10px] text-purple-300 bg-purple-900/30 hover:bg-purple-900/50 border border-purple-500/30 px-2 py-1 rounded transition-colors disabled:opacity-50"
+                                                >
+                                                    {isOptimizing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                                                    Improvise Prompt
+                                                </button>
+                                            )}
+                                        </div>
+                                        <textarea value={genPrompt} onChange={(e) => setGenPrompt(e.target.value)} placeholder={genTab === 'audio' ? "Enter text..." : "Describe what you want to generate..."} className="w-full h-24 bg-neutral-900 border border-neutral-700 rounded-xl p-3 text-sm focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 resize-none transition-all" autoFocus />
+                                    </div>
+                                    {genTab === 'video' && (<div className="space-y-4 pt-2 border-t border-neutral-800"><div className="flex items-center justify-between mb-2"><span className="text-sm font-medium text-neutral-300">Reference Images</span><span className={`text-xs font-medium px-2 py-0.5 rounded-full bg-neutral-800 border border-neutral-700 ${veoModeColor}`}>{veoModeLabel}</span></div><div className="grid grid-cols-2 gap-4"><div className="space-y-2"><div className="flex items-center justify-between"><label className="text-xs font-medium text-neutral-500">Start Frame (Optional)</label>{veoStartImg && <button onClick={() => setVeoStartImg(null)} className="text-xs text-red-400 hover:text-red-300"><Trash2 className="w-3 h-3" /></button>}</div><div className="relative aspect-video bg-neutral-900 border border-neutral-700 rounded-lg overflow-hidden group hover:border-blue-500/50 transition-colors">{veoStartImg ? (<img src={veoStartImg} className="w-full h-full object-cover" alt="Start Frame" />) : (<div className="absolute inset-0 flex flex-col items-center justify-center gap-2"><button onClick={() => handleCaptureFrame('start')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Camera className="w-3 h-3" /> Timeline</button><button onClick={() => handleVeoReferenceUpload('start')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Upload className="w-3 h-3" /> Upload</button></div>)}</div><p className="text-[10px] text-neutral-600">Tip: Position playhead to capture specific timeline frame.</p></div><div className="space-y-2"><div className="flex items-center justify-between"><label className={`text-xs font-medium ${!veoStartImg ? 'text-neutral-700' : 'text-neutral-500'}`}>End Frame (Requires Start Frame)</label>{veoEndImg && <button onClick={() => setVeoEndImg(null)} className="text-xs text-red-400 hover:text-red-300"><Trash2 className="w-3 h-3" /></button>}</div><div className={`relative aspect-video bg-neutral-900 border rounded-lg overflow-hidden group transition-colors ${!veoStartImg ? 'border-neutral-800 opacity-50 pointer-events-none' : 'border-neutral-700 hover:border-purple-500/50'}`}>{veoEndImg ? (<img src={veoEndImg} className="w-full h-full object-cover" alt="End Frame" />) : (<div className="absolute inset-0 flex flex-col items-center justify-center gap-2"><button onClick={() => handleCaptureFrame('end')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Camera className="w-3 h-3" /> Timeline</button><button onClick={() => handleVeoReferenceUpload('end')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Upload className="w-3 h-3" /> Upload</button></div>)}</div></div></div></div>)}{genTab === 'image' && (<div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-neutral-500 mb-1">Model</label><select value={imgModel} onChange={(e) => setImgModel(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="gemini-2.5-flash-image">Fast (Flash)</option><option value="gemini-3-pro-image-preview">High Quality (Pro)</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Aspect Ratio</label><select value={imgAspect} onChange={(e) => setImgAspect(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="16:9">16:9 (Landscape)</option><option value="9:16">9:16 (Portrait)</option><option value="1:1">1:1 (Square)</option></select></div></div>)}{genTab === 'video' && (<div className="grid grid-cols-2 gap-4"><div className="col-span-2 grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-neutral-500 mb-1">Model</label><select value={vidModel} onChange={(e) => setVidModel(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast</option><option value="veo-3.1-generate-preview">Veo 3.1 Quality</option><option value="veo-3.0-fast-generate-preview">Veo 3 Fast</option><option value="veo-3.0-generate-preview">Veo 3 Quality</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Resolution</label><select value={vidResolution} onChange={(e) => setVidResolution(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="720p">720p</option><option value="1080p">1080p (8s only)</option><option value="4k">4k (8s only)</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Duration</label><select value={vidDuration} onChange={(e) => setVidDuration(e.target.value as any)} disabled={vidResolution === '1080p' || vidResolution === '4k' || !!veoStartImg || !!veoEndImg} className={`w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500 ${vidResolution === '1080p' || vidResolution === '4k' || !!veoStartImg || !!veoEndImg ? 'opacity-50 cursor-not-allowed bg-neutral-800' : ''}`}><option value="4">4s</option><option value="8">8s</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Aspect Ratio</label><select value={vidAspect} onChange={(e) => setVidAspect(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="16:9">16:9 (Landscape)</option><option value="9:16">9:16 (Portrait)</option></select></div></div><div className="col-span-2 p-3 bg-blue-900/20 border border-blue-500/20 rounded-lg flex items-start gap-2"><Info className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" /><span className="text-xs text-blue-300 leading-relaxed">Video generation takes 1-2 minutes. A paid billing project is required.<br/><strong>Note:</strong> 1080p, 4K, and Image-to-Video operations are locked to 8s duration.</span></div></div>)}{genTab === 'audio' && (<div><label className="block text-xs font-medium text-neutral-500 mb-1">Voice</label><div className="grid grid-cols-5 gap-2">{['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].map(voice => (<button key={voice} onClick={() => setAudioVoice(voice)} className={`p-2 rounded border text-xs font-medium transition-all ${audioVoice === voice ? 'bg-purple-600 border-purple-500 text-white' : 'bg-neutral-800 border-neutral-700 text-neutral-400 hover:border-neutral-600'}`}>{voice}</button>))}</div></div>)}<div className="flex justify-end pt-4"><button onClick={handleGenerate} disabled={isGenerating || (genTab !== 'video' && !genPrompt.trim()) || (genTab === 'video' && !genPrompt.trim() && !veoStartImg)} className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white px-8 py-3 rounded-lg font-medium text-sm transition-all disabled:opacity-50 shadow-lg shadow-purple-900/20 w-full justify-center">{isGenerating ? (<><Loader2 className="w-5 h-5 animate-spin" />{genTab === 'video' ? 'Generating Video...' : 'Generating...'}</>) : (<><Sparkles className="w-5 h-5" />Generate {genTab.charAt(0).toUpperCase() + genTab.slice(1)}</>)}</button></div></div></div></div>)}</div></div>)}
 
       {/* HEADER omitted for brevity */}
       <header className="h-14 border-b border-neutral-800 flex items-center px-4 justify-between bg-neutral-900/50 backdrop-blur-sm z-10 relative z-[100]">
@@ -1012,6 +1096,17 @@ export default function App() {
                             <div className="absolute top-[10%] bottom-[10%] left-[10%] right-[10%] border border-red-500/30 rounded-sm" />
                         </div>
                     )}
+
+                    {/* Full Screen Button */}
+                    <div className="absolute bottom-4 right-4 z-50 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); toggleFullScreen(); }}
+                            className="p-2 bg-black/60 hover:bg-black/80 text-white rounded-full backdrop-blur-sm transition-colors shadow-lg"
+                            title={isFullScreen ? "Exit Full Screen" : "Full Screen"}
+                        >
+                            {isFullScreen ? <Minimize size={16} /> : <Maximize size={16} />}
+                        </button>
+                    </div>
                 </div>
               </div>
               {/* Toolbar & Timeline */}
