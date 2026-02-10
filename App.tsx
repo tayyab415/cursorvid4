@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Timeline } from './components/Timeline';
 import { CanvasControls } from './components/CanvasControls';
 import { AIAssistant } from './components/sidebar/AIAssistant';
@@ -24,6 +24,7 @@ import { AssetConfig } from './services/assetBrain';
 import { AssetScout } from './components/scout/AssetScout';
 import { ImageEditorModal } from './components/ImageEditorModal';
 import { Workspace } from './components/Workspace';
+import { AssetPlayer } from './components/foundry/AssetPlayer';
 
 // AGENTS
 import { AgenticLoop } from './services/agents/loopRunner';
@@ -606,8 +607,28 @@ export default function App() {
   
   // ROBUST OBSERVATION HANDLER (Replaces simple interval)
   const handleRequestObservation = async (): Promise<string[]> => {
-      // ... (Same logic as before) ...
-      return []; // Placeholder to keep brevity
+      setIsVerifying(true); 
+      setIsPlaying(false); 
+      setCurrentTime(0); 
+      await new Promise(r => setTimeout(r, 200)); 
+      // Use ref to avoid stale closure
+      const currentClips = clipsRef.current;
+      const duration = currentClips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0) || 10; 
+      const capturedFrames: string[] = []; 
+      setIsPlaying(true); 
+      
+      return new Promise((resolve) => { 
+          const checkInterval = setInterval(async () => { 
+              const frame = await captureCurrentFrame(); 
+              if (frame) capturedFrames.push(frame); 
+              if (currentTimeRef.current >= duration) { 
+                  clearInterval(checkInterval); 
+                  setIsPlaying(false); 
+                  setIsVerifying(false); 
+                  resolve(capturedFrames); 
+              } 
+          }, 1000); 
+      }); 
   };
 
   // Helper: Wait for all video elements to seek to correct positions
@@ -648,28 +669,173 @@ export default function App() {
     return t;
   };
 
-  const eyes = new EyesAgent(); const brain = new BrainAgent(); const hands = new HandsAgent(); const verifier = new VerifierAgent();
-  
+  // MEMOIZE AGENTS to prevent recreation on every render
+  const agents = React.useMemo(() => {
+      const eyes = new EyesAgent();
+      const brain = new BrainAgent();
+      const hands = new HandsAgent();
+      const verifier = new VerifierAgent();
+      return { eyes, brain, hands, verifier };
+  }, []);
+
+  // Callback for loop observations
+  const handleLoopObservation = useCallback(async () => {
+      return await handleRequestObservation();
+  }, []); // handleRequestObservation handles stale state via refs internally
+
   // Create loop with abort support
-  const loop = new AgenticLoop( eyes, brain, hands, verifier, (agent, thought, toolAction) => { setChatHistory(prev => [...prev, { role: 'agent', agentType: agent, text: thought, toolAction: toolAction }]); }, handleRequestObservation );
+  const loop = React.useMemo(() => {
+      return new AgenticLoop( 
+          agents.eyes, 
+          agents.brain, 
+          agents.hands, 
+          agents.verifier, 
+          (agent, thought, toolAction) => { 
+              setChatHistory(prev => [...prev, { role: 'agent', agentType: agent, text: thought, toolAction: toolAction }]); 
+          }, 
+          handleLoopObservation
+      );
+  }, [agents, handleLoopObservation]);
   
   const executePlanStep = async (stepIndex: number, plan: EditPlan, initialIntent: string, signal?: AbortSignal) => { 
-      // ... (Same logic as before) ...
+      if (!plan || stepIndex >= plan.steps.length) { if (plan) { await loop.verify(initialIntent, planStartClipsRef.current, timelineStore.getClips()); setActivePlan(null); } setIsProcessing(false); return; } const step = plan.steps[stepIndex]; setCurrentStepIndex(stepIndex); setActivePlan(prev => { if (!prev) return null; const newSteps = [...prev.steps]; newSteps[stepIndex] = { ...newSteps[stepIndex], status: 'generating' }; return { ...prev, steps: newSteps }; }); try { const result = await loop.executeStep(step); if (result.approvalRequired) { setPendingApproval(result.approvalRequired); return; } if (result.success) { setActivePlan(prev => { if (!prev) return null; const newSteps = [...prev.steps]; newSteps[stepIndex] = { ...newSteps[stepIndex], status: 'completed' }; return { ...prev, steps: newSteps }; }); await executePlanStep(stepIndex + 1, plan, initialIntent); } } catch (e) { console.error("Step execution failed", e); setIsProcessing(false); } 
   };
 
   const handleRunAgentLoop = async (message: string) => { 
-      // ... (Same logic as before) ...
+      // Ensure API Key
+      if (!await checkApiKey()) {
+          addToast("API Key required for agent.", "error");
+          return;
+      }
+
+      setIsProcessing(true); 
+      setChatHistory(prev => [...prev, { role: 'user', text: message }]); 
+      setActivePlan(null); 
+      setCurrentStepIndex(0); 
+      currentIntentRef.current = message; 
+      planStartClipsRef.current = [...timelineStore.getClips()]; 
+      
+      try { 
+          // Use refs for current data to avoid stale closures in async flow
+          const currentClips = timelineStore.getClips();
+          const context = { 
+              clips: currentClips, 
+              selectedClipIds, 
+              currentTime, 
+              range: liveScopeRange || { start: 0, end: 0 } 
+          }; 
+          
+          const plan = await loop.plan(message, context, mediaRefs.current); 
+          
+          if (plan) { 
+              setActivePlan(plan); 
+              await executePlanStep(0, plan, message); 
+          } else { 
+              setIsProcessing(false); 
+          } 
+      } catch (e) { 
+          setChatHistory(prev => [...prev, { role: 'system', text: "Agent loop failed unexpectedly." }]); 
+          console.error(e); 
+          setIsProcessing(false); 
+      } 
   };
 
   const handleStopAgent = () => {
-      // ... (Same logic as before) ...
+      // Stub for aborting
+      setIsProcessing(false);
+      setPendingApproval(null);
+      setActivePlan(null);
   };
 
-  const handleExecuteAIAction = async (action: ToolAction) => { if (action.tool_id === 'REPLAN_REQUEST') { const fixPrompt = action.parameters?.prompt || action.reasoning; await handleRunAgentLoop(fixPrompt); return; } if (action.tool_id === 'USER_ACTION_REQUEST') { if (action.button_label.includes("Upload")) { triggerLocalUpload(); } return; } setIsGenerating(true); await hands.execute({ operation: action.tool_id.toLowerCase(), parameters: action.parameters, intent: action.reasoning }); setIsGenerating(false); };
+  // UPDATED: Correctly handle approval requests from single actions
+  const handleExecuteAIAction = async (action: ToolAction) => { 
+      if (action.tool_id === 'REPLAN_REQUEST') { 
+          const fixPrompt = action.parameters?.prompt || action.reasoning; 
+          await handleRunAgentLoop(fixPrompt); 
+          return; 
+      } 
+      if (action.tool_id === 'USER_ACTION_REQUEST') { 
+          if (action.button_label.includes("Upload")) { triggerLocalUpload(); } 
+          return; 
+      } 
+      
+      setIsGenerating(true); 
+      const result = await agents.hands.execute({ 
+          operation: action.tool_id.toLowerCase(), 
+          parameters: action.parameters, 
+          intent: action.reasoning 
+      }); 
+      
+      // Handle approval if required (Fix for single actions)
+      if (result.approvalRequired) {
+          setPendingApproval(result.approvalRequired);
+      } else if (!result.success) {
+          addToast(result.error || "Action failed", 'error');
+      } else {
+          addToast("Action completed", 'success');
+      }
+      
+      setIsGenerating(false); 
+  };
   
-  // SHARED APPROVAL HANDLER
+  // UPDATED: Fix logic bug where missing activePlan prevented modal close
   const handleApprovalConfirm = async (params: any) => { 
-      // ... (Same logic as before) ...
+      if (!pendingApproval) return; 
+      const { tool } = pendingApproval; 
+      setPendingApproval(null); // Close modal immediately
+      
+      setIsGenerating(true); 
+      
+      // If part of a plan, update plan status
+      if (activePlan) {
+          setChatHistory(prev => [...prev, { role: 'system', text: `🚀 Starting generation for step ${currentStepIndex + 1}/${activePlan.steps.length}...` }]); 
+      } else {
+          addToast("Starting generation...", "info");
+      }
+
+      try { 
+          const currentClips = timelineStore.getClips(); 
+          const maxTrack = currentClips.length > 0 ? Math.max(...currentClips.map(c => c.trackId)) : 0; 
+          let targetTrackId = Number(params.trackId); 
+          if (isNaN(targetTrackId)) targetTrackId = maxTrack + 1; 
+          
+          const rawInsertTime = Number(params.insertTime); 
+          const safeStartTime = isNaN(rawInsertTime) ? 0 : rawInsertTime; 
+          const rawDuration = Number(params.duration); 
+          const safeDuration = (isNaN(rawDuration) || rawDuration <= 0) ? 4 : rawDuration; 
+          
+          if (tool === 'generate_video_asset') { 
+              const videoUrl = await generateVideo(params.prompt, params.model || 'veo-3.1-fast-generate-preview', '16:9', '720p', safeDuration); 
+              timelineStore.addClip({ id: `gen-vid-${Date.now()}`, title: `Veo: ${params.prompt.slice(0, 15)}...`, type: 'video', startTime: safeStartTime, duration: safeDuration, sourceStartTime: 0, sourceUrl: videoUrl, trackId: targetTrackId, volume: 1, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 } }); 
+          } else if (tool === 'generate_image_asset') { 
+              const base64Img = await generateImage(params.prompt, params.model || 'gemini-2.5-flash-image'); 
+              const imgUrl = `data:image/png;base64,${base64Img}`; 
+              timelineStore.addClip({ id: `gen-img-${Date.now()}`, title: `Img: ${params.prompt.slice(0, 15)}...`, type: 'image', startTime: safeStartTime, duration: safeDuration || 5, sourceStartTime: 0, sourceUrl: imgUrl, trackId: targetTrackId, transform: { x: 0, y: 0, scale: 1, rotation: 0 } }); 
+          } else if (tool === 'generate_voiceover') { 
+              const audioUrl = await generateSpeech(params.text, params.voice || 'Kore'); 
+              const tempAudio = new Audio(audioUrl); 
+              await new Promise<void>((resolve) => { tempAudio.onloadedmetadata = () => resolve(); tempAudio.onerror = () => resolve(); }); 
+              timelineStore.addClip({ id: `vo-${Date.now()}`, title: `VO: ${params.text.slice(0, 15)}...`, type: 'audio', startTime: safeStartTime, duration: tempAudio.duration || 5, sourceStartTime: 0, sourceUrl: audioUrl, trackId: targetTrackId, volume: 1, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 } }); 
+          } 
+          
+          if (activePlan) {
+              setChatHistory(prev => [...prev, { role: 'system', text: "✅ Asset generated successfully." }]); 
+              setActivePlan(prev => { if (!prev) return null; const newSteps = [...prev.steps]; newSteps[currentStepIndex] = { ...newSteps[currentStepIndex], status: 'completed' }; return { ...prev, steps: newSteps }; }); 
+              await executePlanStep(currentStepIndex + 1, activePlan, currentIntentRef.current); 
+          } else {
+              addToast("Asset generated successfully.", "success");
+          }
+      } catch (e: any) { 
+          console.error("Generation Error:", e); 
+          if (activePlan) {
+              setChatHistory(prev => [...prev, { role: 'system', text: `❌ Generation failed: ${e.message}` }]); 
+          } else {
+              addToast(`Generation failed: ${e.message}`, "error");
+          }
+          setIsProcessing(false); 
+      } finally { 
+          setIsGenerating(false); 
+      } 
   };
   
   const handleTransitionRequest = async (clipA: Clip, clipB: Clip) => {
@@ -1067,6 +1233,22 @@ export default function App() {
                             const url = clip.sourceUrl || videoUrl || '';
                             const isBlob = url.startsWith('blob:');
                             
+                            // If strategy is present (chroma/screen), use AssetPlayer
+                            if (clip.strategy && !isAudio) {
+                                return (
+                                    <AssetPlayer 
+                                        key={clip.id}
+                                        src={url}
+                                        strategy={clip.strategy}
+                                        style={{...style, display: isAudio ? 'none' : 'block', ...transitionStyle}}
+                                        onClick={handleClipClick}
+                                        videoRef={(el) => { mediaRefs.current[clip.id] = el; }}
+                                        autoPlay={isPlaying}
+                                        loop={true} // Clips loop if we drag past end? No, logic handles scrubbing.
+                                    />
+                                );
+                            }
+
                             return ( <div key={clip.id} style={{...style, display: isAudio ? 'none' : 'block', ...transitionStyle}} onClick={handleClipClick}>{isAudio ? ( <audio ref={(el) => { mediaRefs.current[clip.id] = el; }} src={url} muted={false} /> ) : ( <video ref={(el) => { mediaRefs.current[clip.id] = el; }} src={url} className="w-full h-full object-contain pointer-events-none" muted={false} playsInline crossOrigin={isBlob ? undefined : "anonymous"} /> )}</div> );
                         } else { 
                             return ( 

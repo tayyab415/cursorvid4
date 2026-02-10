@@ -210,7 +210,12 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
                     type="text"
                     value={directorQuery}
                     onChange={(e) => setDirectorQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleDirectorSendMessage()}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleDirectorSendMessage();
+                        }
+                    }}
                     disabled={isProcessing}
                     placeholder="Arrange clips, trim silence..."
                     className="flex-1 bg-transparent border-none outline-none text-xs text-white placeholder:text-neutral-600 py-2 min-w-[50px] px-2"

@@ -13,6 +13,33 @@ export const DEFAULT_TEXT_STYLE = {
     align: 'center' as const
 };
 
+// Simple CPU-based Green Screen removal for Canvas Analysis/Export
+const applyChromaKey = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    const frameData = ctx.getImageData(0, 0, width, height);
+    const data = frameData.data;
+    const l = data.length / 4;
+
+    for (let i = 0; i < l; i++) {
+        const r = data[i * 4 + 0];
+        const g = data[i * 4 + 1];
+        const b = data[i * 4 + 2];
+
+        // Green Dominance Keying Algorithm
+        // Matches the WebGL shader logic roughly
+        const rbMax = Math.max(r, b);
+        const gDelta = g - rbMax;
+
+        if (gDelta > 20) { // Threshold (approx 0.08 * 255)
+            // It is green -> Make transparent
+            data[i * 4 + 3] = 0; 
+        } else if (gDelta > 0) {
+            // Despill: Clamp green to max(red, blue) to remove fringing
+            data[i * 4 + 1] = rbMax;
+        }
+    }
+    ctx.putImageData(frameData, 0, 0);
+};
+
 export const drawClipToCanvas = (
     ctx: CanvasRenderingContext2D, 
     clip: Clip, 
@@ -21,11 +48,20 @@ export const drawClipToCanvas = (
     containerH: number
 ) => {
     const transform = clip.transform || { x: 0, y: 0, scale: 1, rotation: 0 };
+    
+    // Save state before clip-specific transforms
     ctx.save();
+    
+    // Position the context
     ctx.translate(containerW / 2, containerH / 2);
     ctx.translate(transform.x * containerW, transform.y * containerH);
     ctx.scale(transform.scale, transform.scale);
     ctx.rotate((transform.rotation * Math.PI) / 180);
+
+    // Apply Blend Mode if Screen Strategy
+    if (clip.strategy === 'screen') {
+        ctx.globalCompositeOperation = 'screen';
+    }
 
     if (clip.type === 'text' && clip.text) {
         const style = clip.textStyle || DEFAULT_TEXT_STYLE;
@@ -39,8 +75,8 @@ export const drawClipToCanvas = (
         const lines = clip.text.split('\n');
         const metrics = ctx.measureText(lines[0]); 
         const lineHeight = style.fontSize * 1.2;
-        const bgWidth = metrics.width + (style.fontSize * 1.0); // More padding
-        const bgHeight = lineHeight * lines.length + (style.fontSize * 0.4); // More padding
+        const bgWidth = metrics.width + (style.fontSize * 1.0);
+        const bgHeight = lineHeight * lines.length + (style.fontSize * 0.4);
 
         if (style.backgroundOpacity > 0) {
             const prevAlpha = ctx.globalAlpha;
@@ -75,20 +111,39 @@ export const drawClipToCanvas = (
           let drawW, drawH;
           if (aspectSrc > aspectDest) { drawW = containerW; drawH = containerW / aspectSrc; } 
           else { drawH = containerH; drawW = containerH * aspectSrc; }
-          ctx.drawImage(source, -drawW/2, -drawH/2, drawW, drawH);
+          
+          if (clip.strategy === 'chroma') {
+              // CHROMA KEY FALLBACK (CPU)
+              // To perform pixel manipulation, we must draw the source to a temporary canvas first
+              // or process the rectangle on the main canvas after drawing.
+              // Processing on main canvas is risky if other items are behind.
+              // So we draw source -> offscreen canvas -> process -> main canvas.
+              
+              const tempCanvas = document.createElement('canvas');
+              tempCanvas.width = drawW;
+              tempCanvas.height = drawH;
+              const tempCtx = tempCanvas.getContext('2d');
+              
+              if (tempCtx) {
+                  tempCtx.drawImage(source, 0, 0, drawW, drawH);
+                  applyChromaKey(tempCtx, drawW, drawH);
+                  ctx.drawImage(tempCanvas, -drawW/2, -drawH/2, drawW, drawH);
+              }
+          } else {
+              // Standard Draw
+              ctx.drawImage(source, -drawW/2, -drawH/2, drawW, drawH);
+          }
       }
     }
+    
+    // Restore
     ctx.restore();
 };
 
-/**
- * Applies transition effects to the canvas context BEFORE drawing the clip.
- * Uses Clipping paths, Alpha, and Transforms.
- */
 export const applyTransitionEffect = (
     ctx: CanvasRenderingContext2D,
     type: TransitionType,
-    progress: number, // 0 to 1
+    progress: number, 
     width: number,
     height: number
 ) => {
@@ -96,52 +151,40 @@ export const applyTransitionEffect = (
         case 'fade':
             ctx.globalAlpha = progress;
             break;
-            
         case 'wipe_right':
-            // Clip everything to the left of progress
             ctx.beginPath();
             ctx.rect(0, 0, width * progress, height);
             ctx.clip();
             break;
-
         case 'wipe_left':
-            // Clip from right
             ctx.beginPath();
             ctx.rect(width * (1 - progress), 0, width, height);
             ctx.clip();
             break;
-
         case 'wipe_down':
             ctx.beginPath();
             ctx.rect(0, 0, width, height * progress);
             ctx.clip();
             break;
-
         case 'wipe_up':
             ctx.beginPath();
             ctx.rect(0, height * (1 - progress), width, height);
             ctx.clip();
             break;
-
         case 'slide_right':
-            // Slide in from left
             ctx.translate(width * (progress - 1), 0);
             break;
-
         case 'slide_left':
-            // Slide in from right
             ctx.translate(width * (1 - progress), 0);
             break;
-
         case 'circle_open':
             const maxRadius = Math.sqrt(width * width + height * height) / 2;
             ctx.beginPath();
             ctx.arc(width / 2, height / 2, maxRadius * progress, 0, Math.PI * 2);
             ctx.clip();
             break;
-
         case 'zoom_in':
-            const scale = 0.5 + (0.5 * progress); // 0.5 -> 1.0
+            const scale = 0.5 + (0.5 * progress); 
             ctx.translate(width/2, height/2);
             ctx.scale(scale, scale);
             ctx.translate(-width/2, -height/2);

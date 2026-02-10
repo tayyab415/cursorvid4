@@ -303,7 +303,7 @@ export const GenerationApprovalModal = ({
     };
 
     return (
-        <div className="fixed inset-0 z-[800] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[1100] flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
             <div className="relative w-full max-w-2xl bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
                 <div className="p-4 border-b border-neutral-800 flex items-center justify-between">
